@@ -1,18 +1,18 @@
-# ⭐ Reputation — On-Chain Reputation System
+# ⭐ Reputation — On-Chain Reputation Scoring
 
-> Endorse users, decay inactive scores, slash bad actors, restore good ones.
+> Register, endorse peers, penalize bad actors. Score bounded [-1000, 1000].
 
 ## Features
 
-- **Endorsements** — users endorse each other for points
-- **Score decay** — inactive accounts lose points over time
-- **Slashing** — judges can slash for bad behavior
-- **Restore** — admin can restore slashed users
-- **Judge system** — delegated moderation
+- **Endorsements** — peer-to-peer reputation boosts (+10 each)
+- **Penalties** — judge-imposed score reductions
+- **Score bounds** — clamped to [-1000, 1000]
+- **Judge system** — admin-managed penalty authority
+- **Threshold gates** — check if user meets minimum score
 
 ## Stats
 
-- ✅ **24/24 tests**, 100% line + branch + function coverage
+- ✅ **23/23 tests**, 100% line + branch + function coverage
 
 ## License
 

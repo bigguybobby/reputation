@@ -1,103 +1,95 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/// @title Reputation — On-chain reputation with endorsements, decay, and slashing
+/// @title Reputation — On-chain reputation with endorsements & penalties
 contract Reputation {
     struct Profile {
-        uint256 score;
+        int256 score;
         uint256 endorsements;
-        uint256 lastActive;
-        bool slashed;
+        uint256 penalties;
+        uint256 lastUpdate;
+        bool exists;
     }
 
     address public admin;
-    uint256 public decayPeriod;  // seconds of inactivity before decay
-    uint256 public decayRate;    // points lost per decay period
-    uint256 public endorseValue; // points per endorsement
-
+    mapping(address => bool) public isJudge;
     mapping(address => Profile) public profiles;
     mapping(address => mapping(address => bool)) public hasEndorsed;
-    mapping(address => bool) public judges;
+    uint256 public totalProfiles;
+    int256 public constant MAX_SCORE = 1000;
+    int256 public constant MIN_SCORE = -1000;
 
-    event Endorsed(address indexed from, address indexed to, uint256 newScore);
-    event Slashed(address indexed user, uint256 amount, string reason);
-    event Restored(address indexed user);
-    event ActivityRecorded(address indexed user);
+    event Registered(address indexed user);
+    event Endorsed(address indexed from, address indexed to);
+    event Penalized(address indexed user, uint256 amount, string reason);
+    event JudgeAdded(address indexed judge);
+    event JudgeRemoved(address indexed judge);
+    event ScoreAdjusted(address indexed user, int256 newScore);
 
     modifier onlyAdmin() { require(msg.sender == admin, "not admin"); _; }
-    modifier onlyJudge() { require(judges[msg.sender] || msg.sender == admin, "not judge"); _; }
+    modifier onlyJudge() { require(isJudge[msg.sender], "not judge"); _; }
 
-    constructor(uint256 _decayPeriod, uint256 _decayRate, uint256 _endorseValue) {
-        require(_decayPeriod >= 1 days, "decay too short");
-        require(_endorseValue > 0, "zero endorse value");
+    constructor() {
         admin = msg.sender;
-        decayPeriod = _decayPeriod;
-        decayRate = _decayRate;
-        endorseValue = _endorseValue;
-        judges[msg.sender] = true;
+        isJudge[msg.sender] = true;
+    }
+
+    function register() external {
+        require(!profiles[msg.sender].exists, "already registered");
+        profiles[msg.sender] = Profile(0, 0, 0, block.timestamp, true);
+        totalProfiles++;
+        emit Registered(msg.sender);
     }
 
     function endorse(address _user) external {
-        require(_user != address(0), "zero address");
-        require(_user != msg.sender, "self endorse");
+        require(profiles[msg.sender].exists, "not registered");
+        require(profiles[_user].exists, "target not registered");
+        require(msg.sender != _user, "self endorse");
         require(!hasEndorsed[msg.sender][_user], "already endorsed");
-        require(!profiles[_user].slashed, "user slashed");
 
         hasEndorsed[msg.sender][_user] = true;
         profiles[_user].endorsements++;
-        profiles[_user].score += endorseValue;
-        profiles[_user].lastActive = block.timestamp;
-        if (profiles[msg.sender].lastActive == 0) profiles[msg.sender].lastActive = block.timestamp;
-
-        emit Endorsed(msg.sender, _user, profiles[_user].score);
+        _adjustScore(_user, 10);
+        emit Endorsed(msg.sender, _user);
     }
 
-    function slash(address _user, uint256 _amount, string calldata _reason) external onlyJudge {
-        require(_user != address(0), "zero address");
-        require(!profiles[_user].slashed, "already slashed");
-        require(bytes(_reason).length > 0, "empty reason");
+    function penalize(address _user, uint256 _amount, string calldata _reason) external onlyJudge {
+        require(profiles[_user].exists, "not registered");
+        require(_amount > 0 && _amount <= 100, "invalid amount");
 
-        Profile storage p = profiles[_user];
-        if (_amount >= p.score) { p.score = 0; } else { p.score -= _amount; }
-        p.slashed = true;
-        emit Slashed(_user, _amount, _reason);
+        profiles[_user].penalties++;
+        _adjustScore(_user, -int256(_amount));
+        emit Penalized(_user, _amount, _reason);
     }
 
-    function restore(address _user) external onlyAdmin {
-        require(profiles[_user].slashed, "not slashed");
-        profiles[_user].slashed = false;
-        emit Restored(_user);
+    function addJudge(address _j) external onlyAdmin {
+        require(_j != address(0), "zero address");
+        require(!isJudge[_j], "already judge");
+        isJudge[_j] = true;
+        emit JudgeAdded(_j);
     }
 
-    function recordActivity(address _user) external onlyJudge {
-        require(_user != address(0), "zero address");
-        profiles[_user].lastActive = block.timestamp;
-        emit ActivityRecorded(_user);
+    function removeJudge(address _j) external onlyAdmin {
+        require(isJudge[_j], "not judge");
+        require(_j != admin, "cant remove admin");
+        isJudge[_j] = false;
+        emit JudgeRemoved(_j);
     }
 
-    function applyDecay(address _user) external {
-        Profile storage p = profiles[_user];
-        require(p.score > 0, "no score");
-        require(p.lastActive > 0, "no activity");
-        require(block.timestamp >= p.lastActive + decayPeriod, "too early");
-
-        uint256 periods = (block.timestamp - p.lastActive) / decayPeriod;
-        uint256 totalDecay = periods * decayRate;
-        if (totalDecay >= p.score) { p.score = 0; } else { p.score -= totalDecay; }
-        p.lastActive = block.timestamp;
-    }
-
-    function setJudge(address _judge, bool _active) external onlyAdmin {
-        require(_judge != address(0), "zero address");
-        judges[_judge] = _active;
-    }
-
-    function getScore(address _user) external view returns (uint256) {
+    function getScore(address _user) external view returns (int256) {
         return profiles[_user].score;
     }
 
-    function getProfile(address _user) external view returns (uint256 score, uint256 endorsements, uint256 lastActive, bool slashed) {
-        Profile storage p = profiles[_user];
-        return (p.score, p.endorsements, p.lastActive, p.slashed);
+    function meetsThreshold(address _user, int256 _min) external view returns (bool) {
+        return profiles[_user].exists && profiles[_user].score >= _min;
+    }
+
+    function _adjustScore(address _user, int256 _delta) internal {
+        int256 s = profiles[_user].score + _delta;
+        if (s > MAX_SCORE) s = MAX_SCORE;
+        if (s < MIN_SCORE) s = MIN_SCORE;
+        profiles[_user].score = s;
+        profiles[_user].lastUpdate = block.timestamp;
+        emit ScoreAdjusted(_user, s);
     }
 }
